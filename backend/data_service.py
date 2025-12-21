@@ -1,9 +1,7 @@
 # backend/data_service.py
 import os
-import time
-import requests
-import zipfile
-import io
+import json
+import glob
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
@@ -11,208 +9,355 @@ import config
 
 class DataService:
     def __init__(self):
-        self.df_merged = None
-        # 确保数据目录存在
-        if not os.path.exists(config.DATA_DIR):
-            os.makedirs(config.DATA_DIR)
+        self.df_final = None
 
     def initialize(self):
-        """系统初始化：检查本地是否有数据，没有则下载，最后加载内存"""
-        print("检查数据完整性...")
-        
-        # 1. 检查 Uniswap 数据
-        if not os.path.exists(config.UNI_CSV):
-            print("未找到 Uniswap 本地数据，开始从 The Graph 抓取...")
-            self._fetch_uniswap_data()
-        
-        # 2. 检查 Binance 数据
-        if not os.path.exists(config.BIN_CSV):
-            print("未找到 Binance 本地数据，开始从 Binance Vision 下载...")
-            self._fetch_binance_data()
-            
-        # 3. 加载并对齐数据
-        self._load_and_merge()
-
-    def _fetch_uniswap_data(self):
-        """从 The Graph 抓取全量数据"""
-        url = f"https://gateway.thegraph.com/api/{config.THE_GRAPH_API_KEY}/subgraphs/id/{config.UNISWAP_SUBGRAPH_ID}"
-        start_ts = int(config.START_DT.timestamp())
-        end_ts = int(config.END_DT.timestamp())
-        
-        query_template = """
-        {
-          swaps(first: 1000, orderBy: timestamp, orderDirection: asc, where: {pool: "%s", timestamp_gte: %d, timestamp_lt: %d}) {
-            id, timestamp, amount0, amount1, transaction { id, blockNumber }
-          }
-        }
-        """
-        all_swaps = []
-        current_ts = start_ts
-        
-        while current_ts < end_ts:
-            query = query_template % (config.POOL_ADDRESS, current_ts, end_ts)
+        """初始化：优先加载缓存，若无则处理原始数据"""
+        # 1. 检查缓存
+        if os.path.exists(config.PROCESSED_DATA_PKL):
+            print(f" 发现缓存数据: {config.PROCESSED_DATA_PKL}")
+            print("   正在快速加载...")
             try:
-                resp = requests.post(url, json={'query': query})
-                if resp.status_code != 200:
-                    print(f"Graph API Error: {resp.text}")
-                    break
-                
-                data = resp.json().get('data', {}).get('swaps', [])
-                if not data:
-                    break
-                    
-                all_swaps.extend(data)
-                last_ts = int(data[-1]['timestamp'])
-                print(f"   -> 已抓取至: {datetime.fromtimestamp(last_ts, timezone.utc)}")
-                
-                # 更新游标
-                current_ts = last_ts + 1 if last_ts >= current_ts else last_ts
-                time.sleep(0.1) # 防限流
-                
+                self.df_final = pd.read_pickle(config.PROCESSED_DATA_PKL)
+                print(f" 数据加载完毕，共 {len(self.df_final)} 个时间切片。")
+                return
             except Exception as e:
-                print(f"抓取异常: {e}")
-                break
+                print(f" 缓存加载失败 ({e})，将重新处理原始文件...")
         
-        # 处理并保存
-        if all_swaps:
-            df = pd.DataFrame(all_swaps)
-            df['tx_hash'] = df['transaction'].apply(lambda x: x['id'])
-            df['block_number'] = df['transaction'].apply(lambda x: x['blockNumber'])
-            df.drop(columns=['transaction'], inplace=True)
-            
-            df['timestamp'] = pd.to_datetime(df['timestamp'].astype(int), unit='s', utc=True)
-            df['amount0'] = df['amount0'].astype(float) # ETH
-            df['amount1'] = df['amount1'].astype(float) # USDT
-            
-            # 计算价格 (USDT / ETH)
-            df['price_usdt_eth'] = df.apply(lambda r: abs(r['amount1']/r['amount0']) if r['amount0']!=0 else 0, axis=1)
-            
-            df = df[['timestamp', 'block_number', 'tx_hash', 'price_usdt_eth', 'amount0', 'amount1']]
-            df.to_csv(config.UNI_CSV, index=False)
-            print(f"Uniswap 数据已保存: {len(df)} 条")
+        # 2. 处理原始数据
+        print(" 开始处理原始数据文件 (这可能需要几分钟)...")
+        self._process_raw_data()
 
-    def _fetch_binance_data(self):
-        """从 Binance Vision 下载 ZIP"""
-        url = f"https://data.binance.vision/data/spot/monthly/aggTrades/{config.BINANCE_SYMBOL}/{config.BINANCE_SYMBOL}-aggTrades-{config.BINANCE_YEAR}-{config.BINANCE_MONTH}.zip"
-        print(f"   -> 正在下载: {url}")
+    def _process_raw_data(self):
+        """从原始数据源构建算法B所需的数据集"""
         
-        resp = requests.get(url)
-        if resp.status_code == 200:
-            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-                fname = z.namelist()[0]
-                # 读取并处理时间戳
-                df = pd.read_csv(z.open(fname), header=None, names=['id','price','qty','f','l','ts','is_maker','best'])
-                
-                # 自动判断微秒/毫秒
-                sample_ts = df['ts'].iloc[0]
-                unit = 'us' if sample_ts > 1e14 else 'ms'
-                df['datetime'] = pd.to_datetime(df['ts'], unit=unit, utc=True)
-                
-                df = df[['datetime', 'price']].sort_values('datetime')
-                df.to_csv(config.BIN_CSV, index=False)
-                print(f"Binance 数据已保存: {len(df)} 条")
-        else:
-            print(f"下载失败 HTTP {resp.status_code}")
+        # --- A. 解析 Uniswap Logs (BigQuery JSON) ---
+        print(f" 正在解析 Uniswap 日志: {config.UNI_LOGS_JSON}")
+        if not os.path.exists(config.UNI_LOGS_JSON):
+            print(f" 错误: 找不到文件 {config.UNI_LOGS_JSON}")
+            return
 
-    def _load_and_merge(self):
-        """加载 CSV 并执行 Merge AsOf"""
-        print("正在加载并对齐数据...")
+        uni_data = []
         try:
-            # 使用 format='mixed' 解决时间戳格式不一致问题
-            df_uni = pd.read_csv(config.UNI_CSV)
-            df_uni['timestamp'] = pd.to_datetime(df_uni['timestamp'], format='mixed', utc=True)
-            df_uni.sort_values('timestamp', inplace=True)
-            # 过滤异常价格
-            df_uni = df_uni[(df_uni['price_usdt_eth'] > 1000) & (df_uni['price_usdt_eth'] < 10000)]
-
-            df_bin = pd.read_csv(config.BIN_CSV)
-            df_bin['datetime'] = pd.to_datetime(df_bin['datetime'], format='mixed', utc=True)
-            df_bin.sort_values('datetime', inplace=True)
-
-            # 核心对齐：Uniswap 时间点回头看 Binance 价格
-            self.df_merged = pd.merge_asof(
-                df_uni, df_bin,
-                left_on='timestamp', right_on='datetime',
-                direction='backward', suffixes=('_uni', '_bin')
-            )
-            
-            # 预计算价差 (Binance - Uniswap)
-            # spread > 0: Binance 贵 (DEX->CEX)
-            # spread < 0: Uniswap 贵 (CEX->DEX)
-            self.df_merged['spread_val'] = self.df_merged['price'] - self.df_merged['price_usdt_eth']
-            self.df_merged['spread_pct'] = (self.df_merged['spread_val'] / self.df_merged['price']) * 100
-            
-            self.df_merged.dropna(subset=['price', 'price_usdt_eth'], inplace=True)
-            print(f"数据准备就绪, 有效记录: {len(self.df_merged)}")
-            
+            # 自动识别 JSON Array 或 JSON Lines 格式
+            with open(config.UNI_LOGS_JSON, 'r') as f:
+                first_char = f.read(1)
+                f.seek(0)
+                
+                if first_char == '[':
+                    print("   -> 格式识别: JSON Array")
+                    raw_list = json.load(f)
+                    for record in raw_list:
+                        parsed = self._decode_uni_log(record)
+                        if parsed: uni_data.append(parsed)
+                else:
+                    print("   -> 格式识别: JSON Lines")
+                    for line in f:
+                        if not line.strip(): continue
+                        try:
+                            record = json.loads(line)
+                            parsed = self._decode_uni_log(record)
+                            if parsed: uni_data.append(parsed)
+                        except:
+                            continue
         except Exception as e:
-            print(f"数据加载失败: {e}")
-            raise e
+            print(f" Uniswap 解析异常: {e}")
+            return
+
+        df_uni = pd.DataFrame(uni_data)
+        if df_uni.empty:
+            print(" Uniswap 数据为空，请检查 JSON 内容。")
+            return
+
+        # 转换时间戳并排序 (确保 UTC)
+        df_uni['timestamp'] = pd.to_datetime(df_uni['timestamp'], utc=True)
+        df_uni.sort_values('timestamp', inplace=True)
+        
+        print(f"   -> Uni 解析成功: {len(df_uni)} 条")
+        print(f"   -> Uni 价格样本: {df_uni['uni_price'].iloc[0]:.2f} - {df_uni['uni_price'].iloc[-1]:.2f}")
+
+        print(f" 正在聚合 Binance CSV 分片... 目录: {config.BINANCE_TRADES_DIR}")
+        trade_files = glob.glob(os.path.join(config.BINANCE_TRADES_DIR, "*.csv"))
+        if not trade_files:
+            print(" 错误: 没有找到 Binance CSV 文件。")
+            return
+
+        bin_dfs = []
+        total_files = len(trade_files)
+        for idx, file in enumerate(trade_files):
+            if idx % 5 == 0:
+                print(f"   -> 进度: {idx}/{total_files} | 读取 {os.path.basename(file)}")
+            
+            try:
+                chunk = pd.read_csv(file)
+                
+                # 标准化列名 (处理 ts vs time)
+                if 'time' not in chunk.columns and 'ts' in chunk.columns:
+                    chunk.rename(columns={'ts': 'time'}, inplace=True)
+                
+                # 转换时间戳 (单位是 us 微秒)
+                chunk['datetime'] = pd.to_datetime(chunk['time'], unit='us', utc=True)
+                
+                # 预计算成交额
+                chunk['quote_qty'] = chunk['price'] * chunk['qty']
+                
+                # 按 1秒 重采样聚合
+                resampled = chunk.resample('1s', on='datetime').agg({
+                    'price': ['mean', 'std'],  # std 即波动率
+                    'qty': 'sum',
+                    'quote_qty': 'sum'
+                })
+                
+                resampled.columns = ['bin_price_close', 'bin_volatility', 'bin_volume', 'bin_quote_vol']
+                # 计算 VWAP (加权均价)
+                resampled['bin_vwap'] = resampled['bin_quote_vol'] / resampled['bin_volume']
+                
+                bin_dfs.append(resampled)
+            except Exception as e:
+                print(f"    读取失败 {file}: {e}")
+
+        if not bin_dfs:
+            print(" Binance 数据聚合失败。")
+            return
+
+        df_bin = pd.concat(bin_dfs).sort_index()
+        
+        # 填充空值
+        df_bin['bin_price_close'] = df_bin['bin_price_close'].ffill()
+        df_bin['bin_vwap'] = df_bin['bin_vwap'].fillna(df_bin['bin_price_close'])
+        df_bin['bin_volatility'] = df_bin['bin_volatility'].fillna(0)
+        
+        print(f"   -> Binance 聚合成功: {len(df_bin)} 条秒级快照")
+
+        # ---  加载 Gas 费 ---
+        print(" 加载 Gas 费数据...")
+        if os.path.exists(config.GAS_FEE_CSV):
+            df_gas = pd.read_csv(config.GAS_FEE_CSV)
+            if 'number' in df_gas.columns:
+                df_gas.rename(columns={'number': 'block_number'}, inplace=True)
+            # 建立 Block -> BaseFee 映射
+            gas_map = dict(zip(df_gas['block_number'], df_gas['base_fee_per_gas']))
+            print(f"   -> Gas 数据就绪: {len(gas_map)} 条记录")
+        else:
+            print(" 未找到 Gas 文件，将使用默认值。")
+            gas_map = {}
+
+        # --- D. 数据合并 (Merge Asof) ---
+        print(" 执行数据对齐 (Merge Asof)...")
+        
+        # 确保索引具有时区信息
+        if df_bin.index.tz is None:
+            df_bin.index = df_bin.index.tz_localize('UTC')
+
+        try:
+            # 以 Uniswap 事件为基准，向后查找最近的 Binance 状态
+            df_merged = pd.merge_asof(
+                df_uni, 
+                df_bin, 
+                left_on='timestamp', 
+                right_index=True, 
+                direction='backward', 
+                tolerance=pd.Timedelta('5m') # 允许最大5分钟的延迟
+            )
+        except Exception as e:
+            print(f" Merge 失败: {e}")
+            return
+
+        # 映射 Gas
+        df_merged['base_fee'] = df_merged['block_number'].map(gas_map)
+        df_merged['base_fee'] = df_merged['base_fee'].ffill().fillna(20000000000)
+
+        # 清洗无效行 (没对齐到 Binance 数据的行)
+        before_len = len(df_merged)
+        df_merged.dropna(subset=['bin_vwap'], inplace=True)
+        after_len = len(df_merged)
+        
+        print(f"   -> 对齐统计: 总 {before_len} 行 -> 有效 {after_len} 行 (丢弃 {before_len - after_len})")
+
+        if df_merged.empty:
+            print("错误: 合并后没有数据。请检查时间范围是否重叠。")
+        else:
+            self.df_final = df_merged
+            # 保存缓存
+            self.df_final.to_pickle(config.PROCESSED_DATA_PKL)
+            print(" 数据构建完成并已缓存。")
+
+    def _decode_uni_log(self, record):
+        """解码 Uniswap Log，包含 0x11b8 池价格修正逻辑"""
+        try:
+            # 处理时间戳字符串
+            ts_str = record['block_timestamp']
+            if 'UTC' in ts_str:
+                ts_str = ts_str.replace(' UTC', '')
+            
+            raw_data = record['data'].replace('0x', '')
+            if len(raw_data) < 256: return None
+
+            # 提取核心字段
+            sqrt_price_x96 = int(raw_data[128:192], 16)
+            liquidity = int(raw_data[192:256], 16)
+            
+            # Q64.96 定点数转 float
+            price_raw_ratio = (sqrt_price_x96 / (2**96)) ** 2
+            
+            # 针对 USDT(6)/WETH(18) 池子的单位换算
+            # 目标: 获得 USDT per ETH (数值约 2000-5000)
+            
+            # 假设 1: Token1/Token0 (WETH/USDT) * 10^12
+            p1 = price_raw_ratio * (10**12)
+            # 假设 2: Token0/Token1 (USDT/WETH) / 10^12
+            p2 = price_raw_ratio / (10**12)
+            
+            final_price = 0.0
+            
+            # 智能判定区间 (2025年 ETH 价格预估在 1000-10000)
+            if 1000 < p1 < 10000:
+                final_price = p1
+            elif 1000 < (1/p1) < 10000:
+                final_price = 1/p1
+            elif 1000 < p2 < 10000:
+                final_price = p2
+            elif 1000 < (1/p2) < 10000:
+                final_price = 1/p2
+            else:
+                # 默认回退逻辑: 0x11b8 通常是 Token0=USDT, Token1=WETH
+                # SqrtPrice 对应 Token1/Token0
+                # Price = 1 / (Raw / 10^12)
+                final_price = (10**12) / price_raw_ratio
+            
+            # 最终安全过滤
+            if final_price < 100 or final_price > 20000:
+                return None
+
+            return {
+                'timestamp': ts_str,
+                'block_number': int(record['block_number']),
+                'uni_price': final_price,
+                'uni_liquidity': liquidity,
+                'uni_volatility': 0 # 占位
+            }
+        except Exception as e:
+            return None
 
     def get_chart_data(self, timeframe='1H'):
-        """图表数据重采样"""
-        if self.df_merged is None: return []
+        """生成前端图表数据"""
+        if self.df_final is None or self.df_final.empty: return []
         
-        df = self.df_merged.set_index('timestamp')
-        resampled = df[['price_usdt_eth', 'price', 'spread_pct']].resample(timeframe).mean().reset_index()
-        resampled['timestamp'] = resampled['timestamp'].apply(lambda x: x.isoformat() if pd.notnull(x) else "")
-        return resampled.fillna(0).to_dict(orient='records')
-
-    def analyze_opportunities(self, threshold_pct, capital):
-        """非原子套利识别算法"""
-        if self.df_merged is None: return []
-
-        # 1. 初筛
-        mask = self.df_merged['spread_pct'].abs() >= threshold_pct
-        df_ops = self.df_merged[mask].copy()
+        df = self.df_final.set_index('timestamp')
+        resampled = df[['uni_price', 'bin_vwap']].resample(timeframe).mean().reset_index()
         
-        if df_ops.empty: return []
+        # 计算价差百分比
+        resampled['spread_pct'] = (resampled['bin_vwap'] - resampled['uni_price']) / resampled['uni_price'] * 100
+        
+        resampled = resampled.replace([np.inf, -np.inf], 0).fillna(0)
+        resampled['timestamp'] = resampled['timestamp'].apply(lambda x: x.isoformat())
+        
+        return resampled.to_dict(orient='records')
 
-        # 2. 真实成本计算函数
-        def calc_logic(row):
-            eth_price = row['price_usdt_eth'] # 当前 ETH 价格
-            spread_pct = row['spread_pct']
+    def identify_opportunities_algo_b(self, min_profit_usd=0.0):
+        """
+        核心算法 B: 基于统计冲击模型的非原子套利识别
+        """
+        if self.df_final is None or self.df_final.empty: return []
+        
+        results = []
+        
+        # 使用 itertuples 遍历每一行数据
+        for row in self.df_final.itertuples():
             
-            # 成本结构
-            # A. 交易所手续费
-            cost_cex = capital * config.CEX_TAKER_FEE
-            # B. 链上 Gas (ETH -> USDT)
-            cost_gas = config.DEFAULT_GAS_LIMIT * (config.DEFAULT_GAS_PRICE * 1e-9) * eth_price
-            # C. 提币费
-            cost_total = cost_cex + cost_gas + config.FIXED_TRANSFER_FEE
+            p_uni = row.uni_price
+            p_bin = row.bin_vwap
             
-            # 利润计算
-            # 假设全额投入，买入量 = 本金 / 买入价
-            if spread_pct > 0:
-                # 正溢价 (Binance贵): Uni买 -> Bin卖
-                direction = "DEX_TO_CEX"
-                buy_price = row['price_usdt_eth']
-                sell_price = row['price']
+            # 1. 快速过滤: 价差过小则跳过计算 (节省性能)
+            # 0.0015 = 0.15% (涵盖 0.1% + 0.05% 手续费)
+            raw_spread = abs(p_uni - p_bin) / p_uni
+            if raw_spread < 0.0015: 
+                continue
+
+            liquidity = row.uni_liquidity
+            volatility = row.bin_volatility
+            base_fee = row.base_fee
+            
+            # 2. 确定套利方向
+            if p_bin > p_uni:
+                direction = "Buy_Uni_Sell_Bin" # CEX 贵，去 DEX 买
+                spread_val = (p_bin - p_uni) / p_uni
             else:
-                # 负溢价 (Uni贵): Bin买 -> Uni卖
-                direction = "CEX_TO_DEX"
-                buy_price = row['price']
-                sell_price = row['price_usdt_eth']
+                direction = "Buy_Bin_Sell_Uni" # DEX 贵，去 CEX 买
+                spread_val = (p_uni - p_bin) / p_bin
             
-            gross_profit = (capital / buy_price) * (sell_price - buy_price)
-            net_profit = gross_profit - cost_total
+            # 3. 循环寻找最佳投入量 (Optimal Amount)
+            best_profit = -9999
+            best_amount = 0
+            best_details = {}
             
-            return pd.Series([gross_profit, net_profit, cost_gas, direction])
+            # 模拟投入不同数量的 ETH
+            for amount_eth in config.SIMULATION_AMOUNTS:
+                
+                # --- A. 计算 Uni 滑点 (基于 Liquidity) ---
+                # 简化公式: Slippage% ≈ (Amount * 10^18) / Liquidity * C
+                if liquidity > 0:
+                    uni_slippage_pct = (amount_eth * 1e18) / liquidity * 0.5
+                else:
+                    uni_slippage_pct = 0.1 # 深度缺失惩罚
+                
+                # --- B. 计算 Bin 滑点 (基于 Volatility) ---
+                # 算法 B 核心: Slippage = ImpactFactor * Vol * sqrt(Amount)
+                # 若波动率为0，给一个默认风险值
+                eff_vol = volatility if volatility > 0 else 5.0
+                bin_slippage_pct = config.ALGO_IMPACT_FACTOR * eff_vol * (amount_eth ** 0.5)
+                
+                # --- C. 计算 Gas 成本 ---
+                # Gas Price = Base + Priority(2Gwei)
+                gas_price = base_fee + 2e9
+                gas_cost_eth = (config.GAS_LIMIT_SWAP * gas_price) / 1e18
+                gas_cost_usd = gas_cost_eth * p_uni
+                
+                # --- D. 利润计算 ---
+                total_fee_rate = config.CEX_TAKER_FEE + config.DEX_FEE_TIER
+                total_slippage = uni_slippage_pct + bin_slippage_pct
+                
+                # 毛利估算
+                margin_per_unit = spread_val - total_slippage - total_fee_rate
+                gross_profit = amount_eth * p_uni * margin_per_unit
+                
+                # 净利 = 毛利 - 固定成本 (Gas + 提币)
+                net_profit = gross_profit - gas_cost_usd - config.FIXED_TRANSFER_COST
+                
+                if net_profit > best_profit:
+                    best_profit = net_profit
+                    best_amount = amount_eth
+                    best_details = {
+                        "uni_slip": uni_slippage_pct,
+                        "bin_slip": bin_slippage_pct,
+                        "gas": gas_cost_usd,
+                        "roi": net_profit / (amount_eth * p_uni)
+                    }
+            
+            # 4. 记录满足阈值的机会
+            if best_profit > min_profit_usd:
+                results.append({
+                    "timestamp": row.timestamp.isoformat(),
+                    "block_number": row.block_number,
+                    "direction": direction,
+                    "price_uni": p_uni,
+                    "price_bin": p_bin,
+                    "spread_pct": spread_val * 100,
+                    "volatility": volatility,
+                    
+                    "optimal_amount_eth": best_amount,
+                    "net_profit_usd": best_profit,
+                    "roi_pct": best_details['roi'] * 100,
+                    
+                    "details": {
+                        "est_uni_slippage_pct": best_details['uni_slip'] * 100,
+                        "est_bin_slippage_pct": best_details['bin_slip'] * 100,
+                        "gas_cost_usd": best_details['gas']
+                    }
+                })
+        
+        # 按净利润倒序排列
+        return sorted(results, key=lambda x: x['net_profit_usd'], reverse=True)
 
-        # 3. 应用计算
-        cols = df_ops.apply(calc_logic, axis=1)
-        cols.columns = ['gross_profit', 'estimated_profit', 'cost_gas', 'direction']
-        df_final = pd.concat([df_ops, cols], axis=1)
-        
-        # 4. 只保留净利润 > 0 并排序
-        df_final = df_final[df_final['estimated_profit'] > 0]
-        df_final.sort_values('estimated_profit', ascending=False, inplace=True)
-        
-        # 5. 格式化
-        df_final['timestamp'] = df_final['timestamp'].apply(lambda x: x.isoformat())
-        
-        # 返回前 100 条
-        return df_final.to_dict(orient='records')
-
-# 单例
+# 单例模式
 service = DataService()

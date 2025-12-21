@@ -2,56 +2,55 @@
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List
 from pydantic import BaseModel
 import pandas as pd
-
 from data_service import service
 
-# --- 数据模型定义 ---
+# --- Pydantic 模型定义 ---
 
 class ChartPoint(BaseModel):
     timestamp: str
-    price_usdt_eth: float # DEX 价格
-    price: float          # CEX 价格
-    spread_pct: float     # 价差
-
-class ArbitrageOpportunity(BaseModel):
-    timestamp: str
-    tx_hash: str
-    block_number: int
-    
-    # 价格信号
-    price_usdt_eth: float
-    price: float
+    uni_price: float
+    bin_vwap: float
     spread_pct: float
-    direction: str        # DEX_TO_CEX 或 CEX_TO_DEX
+
+class ArbitrageDetails(BaseModel):
+    est_uni_slippage_pct: float
+    est_bin_slippage_pct: float
+    gas_cost_usd: float
+
+class AlgoBOpportunity(BaseModel):
+    timestamp: str
+    block_number: int
+    direction: str
+    price_uni: float
+    price_bin: float
+    spread_pct: float
+    volatility: float
     
-    # 财务数据
-    gross_profit: float   # 毛利
-    cost_gas: float       # Gas 成本 (USDT)
-    estimated_profit: float # 净利润 (扣除 Gas、CEX手续费、提币费)
+    optimal_amount_eth: float # 算法 B 算出的最佳交易量 (ETH)
+    net_profit_usd: float     # 真实净利 (USDT)
+    roi_pct: float            # 投资回报率 (%)
+    
+    details: ArbitrageDetails
 
 class Summary(BaseModel):
     total_opportunities: int
     total_potential_profit: float
     max_single_profit: float
-    avg_roi_pct: float
+    avg_roi: float
 
-
+# --- 生命周期管理 ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时执行数据检查与加载
+    # 启动时初始化数据服务
     service.initialize()
     yield
 
-app = FastAPI(
-    title="Non-Atomic Arbitrage System", 
-    version="1.0",
-    lifespan=lifespan
-)
+app = FastAPI(title="Arbitrage Algo B System", lifespan=lifespan)
 
-# 允许跨域
+# 允许跨域请求 (方便前端调用)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -59,47 +58,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 接口路由 ---
+# --- API 接口 ---
 
 @app.get("/api/chart", response_model=List[ChartPoint])
-def get_chart(timeframe: str = Query("1H", description="1H, 4H, 1D")):
+def get_chart(timeframe: str = "1H"):
     """获取价格对比图表数据"""
-    mapping = {"1H": "1H", "4H": "4H", "1D": "1D"}
-    rule = mapping.get(timeframe, "1H")
-    return service.get_chart_data(rule)
+    return service.get_chart_data(timeframe)
 
-@app.get("/api/analysis", response_model=List[ArbitrageOpportunity])
-def get_analysis(
-    threshold: float = Query(0.5, description="价差阈值%"),
-    capital: float = Query(10000.0, description="投入本金USDT")
+@app.get("/api/opportunities", response_model=List[AlgoBOpportunity])
+def get_opportunities(
+    min_profit: float = Query(10.0, description="最小净利润阈值(USDT)")
 ):
-    """获取详细的套利机会列表"""
-    return service.analyze_opportunities(threshold, capital)
+    """
+    运行算法：识别基于统计学冲击模型的非原子套利机会
+    """
+    return service.identify_opportunities_algo_b(min_profit_usd=min_profit)
 
 @app.get("/api/summary", response_model=Summary)
-def get_summary(
-    threshold: float = 0.5,
-    capital: float = 10000.0
-):
+def get_summary(min_profit: float = 10.0):
     """获取统计摘要"""
-    data = service.analyze_opportunities(threshold, capital)
+    data = service.identify_opportunities_algo_b(min_profit_usd=min_profit)
     if not data:
-        return Summary(total_opportunities=0, total_potential_profit=0, max_single_profit=0, avg_roi_pct=0)
+        return Summary(total_opportunities=0, total_potential_profit=0, max_single_profit=0, avg_roi=0)
     
     df = pd.DataFrame(data)
-    total_profit = df['estimated_profit'].sum()
-    max_profit = df['estimated_profit'].max()
-    # ROI = 净利润 / 本金
-    avg_roi = (df['estimated_profit'].mean() / capital) * 100
     
     return Summary(
         total_opportunities=len(data),
-        total_potential_profit=total_profit,
-        max_single_profit=max_profit,
-        avg_roi_pct=avg_roi
+        total_potential_profit=df['net_profit_usd'].sum(),
+        max_single_profit=df['net_profit_usd'].max(),
+        avg_roi=df['roi_pct'].mean()
     )
 
 if __name__ == "__main__":
     import uvicorn
-    # 开发模式启动
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
