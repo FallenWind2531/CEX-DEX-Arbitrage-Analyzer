@@ -11,9 +11,8 @@
 下载项目所需的 Python 库：
 `pip install -r requirements.txt`
 
-**4. 填写 API Key**
-到the graph中申请api key用于数据下载
-在`config.py`中找到 THE_GRAPH_API_KEY，将引号内的内容替换为你的 Key。
+**4. 准备数据**
+如果想从头开始构建，需要参照ddoc/数据源说明文档.md内容获取原始数据并正确放置；如果想快速启动，只需要确保backend/data目录下包含正确的pkl缓存文件即可
 
 **5. 启动程序**
 执行启动命令：
