@@ -17,7 +17,7 @@ const PriceChart = ({ data, highlightTimestamp }) => {
       ...item,
       // 创建一个数值型的时间字段用于 X 轴
       timestampNum: new Date(item.timestamp).getTime(),
-      priceDiff: item.price - item.price_usdt_eth
+      priceDiff: item.bin_vwap - item.uni_price
     }));
   }, [data]);
 
@@ -146,8 +146,8 @@ const PriceChart = ({ data, highlightTimestamp }) => {
               />
             )}
 
-            <Line yAxisId="left" type="monotone" dataKey="price" stroke="#F3BA2F" name="Binance (CEX)" strokeWidth={2} dot={false} connectNulls={true} isAnimationActive={false} />
-            <Line yAxisId="left" type="monotone" dataKey="price_usdt_eth" stroke="#FF007A" name="Uniswap V3 (DEX)" strokeWidth={2} dot={false} connectNulls={true} isAnimationActive={false} />
+            <Line yAxisId="left" type="monotone" dataKey="bin_vwap" stroke="#F3BA2F" name="Binance VWAP (CEX)" strokeWidth={2} dot={false} connectNulls={true} isAnimationActive={false} />
+            <Line yAxisId="left" type="monotone" dataKey="uni_price" stroke="#FF007A" name="Uniswap V3 (DEX)" strokeWidth={2} dot={false} connectNulls={true} isAnimationActive={false} />
 
             <Brush 
               dataKey="timestampNum" 

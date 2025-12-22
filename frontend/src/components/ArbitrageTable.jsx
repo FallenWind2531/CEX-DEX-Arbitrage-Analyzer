@@ -10,14 +10,14 @@ const ArbitrageTable = ({ data, onRowClick, selectedTimestamp }) => {
     data.forEach(item => {
       const existing = map.get(item.timestamp);
       // 如果该时间戳还没有记录，或者当前记录的利润更高，则更新 Map
-      if (!existing || item.estimated_profit > existing.estimated_profit) {
+      if (!existing || item.net_profit_usd > existing.net_profit_usd) {
         map.set(item.timestamp, item);
       }
     });
 
     // 将 Map 转回数组，并按利润降序排列（保持原有的 Top 排序逻辑）
     return Array.from(map.values())
-      .sort((a, b) => b.estimated_profit - a.estimated_profit);
+      .sort((a, b) => b.net_profit_usd - a.net_profit_usd);
   }, [data]);
 
   return (
@@ -38,14 +38,16 @@ const ArbitrageTable = ({ data, onRowClick, selectedTimestamp }) => {
               <th className="p-3">Binance</th>
               <th className="p-3">Uniswap</th>
               <th className="p-3">价差%</th>
+              <th className="p-3">最优交易量(ETH)</th>
               <th className="p-3">Gas成本</th>
+              <th className="p-3">ROI%</th>
               <th className="p-3 text-right">净利润 (USDT)</th>
             </tr>
           </thead>
           <tbody>
             {uniqueData.length === 0 ? ( 
               <tr>
-                <td colSpan="7" className="p-8 text-center text-gray-400">暂无符合条件的套利机会</td>
+                <td colSpan="9" className="p-8 text-center text-gray-400">暂无符合条件的套利机会</td>
               </tr>
             ) : (
               uniqueData.slice(0, 20).map((row, idx) => {
@@ -53,7 +55,7 @@ const ArbitrageTable = ({ data, onRowClick, selectedTimestamp }) => {
                 
                 return (
                   <tr 
-                    key={row.timestamp} 
+                    key={row.timestamp + '-' + idx} 
                     onClick={() => onRowClick(row.timestamp)}
                     className={`border-t border-gray-100 transition-colors cursor-pointer ${
                       isSelected ? 'bg-blue-100 border-l-4 border-l-blue-600' : 'hover:bg-gray-50'
@@ -66,15 +68,17 @@ const ArbitrageTable = ({ data, onRowClick, selectedTimestamp }) => {
                       <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
                         row.direction === 'DEX_TO_CEX' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-700'
                       }`}>
-                        {row.direction === 'DEX_TO_CEX' ? 'Uni -> Bin' : 'Bin -> Uni'}
+                        {row.direction === 'DEX_TO_CEX' ? 'Uni → Bin' : 'Bin → Uni'}
                       </span>
                     </td>
-                    <td className="p-3">${row.price.toFixed(2)}</td>
-                    <td className="p-3">${row.price_usdt_eth.toFixed(2)}</td>
+                    <td className="p-3">${row.price_bin.toFixed(2)}</td>
+                    <td className="p-3">${row.price_uni.toFixed(2)}</td>
                     <td className="p-3 text-gray-500">{row.spread_pct.toFixed(2)}%</td>
-                    <td className="p-3 text-gray-500">${row.cost_gas.toFixed(2)}</td>
+                    <td className="p-3 text-gray-500">{row.optimal_amount_eth.toFixed(4)}</td>
+                    <td className="p-3 text-gray-500">${row.details.gas_cost_usd.toFixed(2)}</td>
+                    <td className="p-3 text-gray-500">{row.roi_pct.toFixed(2)}%</td>
                     <td className="p-3 text-right font-bold text-green-600">
-                      +${row.estimated_profit.toFixed(2)}
+                      +${row.net_profit_usd.toFixed(2)}
                     </td>
                   </tr>
                 );

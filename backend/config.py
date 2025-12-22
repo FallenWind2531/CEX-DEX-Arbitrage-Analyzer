@@ -1,31 +1,38 @@
 # backend/config.py
 from datetime import datetime, timezone
+import os
 
-# 请在此处填入你在 The Graph Studio 申请的 API Key
-THE_GRAPH_API_KEY = "example_key" 
-
-# Uniswap V3 相关
-# 修正后的 Subgraph ID (Uniswap V3 Ethereum)
-UNISWAP_SUBGRAPH_ID = "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
-POOL_ADDRESS = "0x11b815efb8f581194ae79006d24e0d814b7697f6" # USDT/WETH 0.05%
-
-# Binance 相关
-BINANCE_SYMBOL = "ETHUSDT"
-BINANCE_YEAR = "2025"
-BINANCE_MONTH = "09"
-
-# 数据时间范围 (UTC)
-START_DT = datetime(2025, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
-END_DT   = datetime(2025, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
-
-# 本地文件路径
 DATA_DIR = "./data"
-UNI_CSV = f"{DATA_DIR}/uniswap_v3_{BINANCE_MONTH}_{BINANCE_YEAR}.csv"
-BIN_CSV = f"{DATA_DIR}/binance_{BINANCE_SYMBOL.lower()}_{BINANCE_MONTH}_{BINANCE_YEAR}.csv"
-MERGED_CSV = f"{DATA_DIR}/merged_arbitrage_data.csv"
 
-# 费率模型默认值
-DEFAULT_GAS_LIMIT = 150000  # Uniswap Swap Gas Limit
-DEFAULT_GAS_PRICE = 30      # Gwei
-CEX_TAKER_FEE = 0.001       # 0.1% Binance Fee
-FIXED_TRANSFER_FEE = 5.0    # 5 USDT 提币费
+# BigQuery 导出的 Uniswap Logs 
+UNI_LOGS_JSON = f"{DATA_DIR}/uniswap_logs_2025_09.json"
+
+# 分片后的 Binance Trades CSV 目录
+BINANCE_TRADES_DIR = f"{DATA_DIR}/split_trades"
+
+# BigQuery 导出的 Gas 费 CSV
+GAS_FEE_CSV = f"{DATA_DIR}/eth_gas_fees_2025_09.csv"
+
+# 处理后的中间缓存文件 (用于加速后续启动)
+PROCESSED_DATA_PKL = f"{DATA_DIR}/processed_algo_b_data.pkl"
+
+
+# 冲击系数 
+# 含义：每增加 1 ETH 交易量，且在 1 单位波动率下，滑点增加的比例
+# 这是一个经验值，用于模拟 Binance 在没有订单簿数据时的滑点
+ALGO_IMPACT_FACTOR = 0.0002 
+
+# 模拟交易的 ETH 数量列表
+SIMULATION_AMOUNTS = [0.1, 1.0, 5.0, 10.0, 20.0, 50.0, 100.0]
+
+# 费率常量
+CEX_TAKER_FEE = 0.001       # 0.1% Binance Taker Fee
+DEX_FEE_TIER = 0.0005       # 0.05% Uniswap Pool Fee
+
+# 链上交互成本
+GAS_LIMIT_SWAP = 160000     # Uniswap V3 Swap Gas Estimate (约 16万 Gas)
+FIXED_TRANSFER_COST = 5.0   # 5 USDT 跨交易所提币/归集磨损费 (固定门槛)
+
+# 代币精度
+DECIMALS_TOKEN0 = 6  # USDT
+DECIMALS_TOKEN1 = 18 # WETH

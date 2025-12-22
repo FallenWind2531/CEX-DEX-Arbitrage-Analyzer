@@ -1,22 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { fetchChartData, fetchAnalysisData, fetchSummaryData } from '../api/marketService';
+import { fetchChartData, fetchOpportunities, fetchSummaryData } from '../api/marketService';
 import PriceChart from '../components/PriceChart';
 import StatCard from '../components/StatCard';
 import ArbitrageTable from '../components/ArbitrageTable';
-import Layout from '../components/Layout';
 import { Activity, DollarSign, TrendingUp, Filter, RefreshCw } from 'lucide-react';
 
 const Dashboard = () => {
   // 状态管理
   const [chartData, setChartData] = useState([]);
-  const [analysisData, setAnalysisData] = useState([]);
+  const [opportunities, setOpportunities] = useState([]);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // 交互参数
   const [timeframe, setTimeframe] = useState('1H');
-  const [capital, setCapital] = useState(10000);
-  const [threshold, setThreshold] = useState(0.5);
+  const [minProfit, setMinProfit] = useState(10.0);
   const [selectedTimestamp, setSelectedTimestamp] = useState(null);
 
   // 加载数据函数
@@ -24,14 +22,14 @@ const Dashboard = () => {
     setLoading(true);
     try {
       // 并行请求所有数据
-      const [chartRes, analysisRes, summaryRes] = await Promise.all([
+      const [chartRes, opportunitiesRes, summaryRes] = await Promise.all([
         fetchChartData(timeframe),
-        fetchAnalysisData(threshold, capital),
-        fetchSummaryData(threshold, capital)
+        fetchOpportunities(minProfit),
+        fetchSummaryData(minProfit)
       ]);
 
       setChartData(chartRes);
-      setAnalysisData(analysisRes);
+      setOpportunities(opportunitiesRes);
       setSummary(summaryRes);
     } catch (error) {
       console.error("Failed to fetch data", error);
@@ -40,13 +38,13 @@ const Dashboard = () => {
     }
   };
 
-  // 监听参数变化自动刷新 (或者你可以做一个“应用”按钮手动触发)
+  // 监听参数变化自动刷新
   useEffect(() => {
     loadData();
-  }, [timeframe, capital, threshold]);
+  }, [timeframe, minProfit]);
 
   return (
-    <Layout>
+    <>
       <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">仪表盘概览</h1>
@@ -69,23 +67,13 @@ const Dashboard = () => {
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">投入本金 (USDT)</label>
+            <label className="block text-xs font-medium text-gray-500 mb-1">最小净利润 (USDT)</label>
             <input 
               type="number" 
-              value={capital}
-              onChange={(e) => setCapital(Number(e.target.value))}
-              className="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-32 p-2"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">最小价差阈值 (%)</label>
-            <input 
-              type="number" 
-              step="0.1"
-              value={threshold}
-              onChange={(e) => setThreshold(Number(e.target.value))}
-              className="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-24 p-2"
+              step="1"
+              value={minProfit}
+              onChange={(e) => setMinProfit(Number(e.target.value))}
+              className="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-28 p-2"
             />
           </div>
 
@@ -120,7 +108,7 @@ const Dashboard = () => {
         />
         <StatCard 
           title="平均 ROI" 
-          value={summary ? `${summary.avg_roi_pct.toFixed(4)}%` : '-'} 
+          value={summary ? `${summary.avg_roi.toFixed(4)}%` : '-'} 
           icon={Filter} 
         />
       </div>
@@ -135,14 +123,14 @@ const Dashboard = () => {
         
         {/* 传递分析列表数据 */}
         <ArbitrageTable 
-          data={analysisData} 
+          data={opportunities} 
           onRowClick={(timestamp) => {
             setSelectedTimestamp(timestamp);
           }}
           selectedTimestamp={selectedTimestamp}
         />
       </div>
-    </Layout>
+    </>
   );
 };
 
