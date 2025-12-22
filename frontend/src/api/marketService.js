@@ -15,24 +15,24 @@ export const fetchChartData = async (timeframe = '1H') => {
   }
 };
 
-// 获取套利分析列表
-export const fetchAnalysisData = async (threshold = 0.5, capital = 10000) => {
+// 获取套利机会列表 (算法B)
+export const fetchOpportunities = async (minProfit = 10.0) => {
   try {
-    const response = await axios.get(`${API_BASE_URL}/analysis`, {
-      params: { threshold, capital }
+    const response = await axios.get(`${API_BASE_URL}/opportunities`, {
+      params: { min_profit: minProfit }
     });
     return response.data;
   } catch (error) {
-    console.error("Error fetching analysis data:", error);
+    console.error("Error fetching opportunities data:", error);
     return [];
   }
 };
 
 // 获取统计摘要
-export const fetchSummaryData = async (threshold = 0.5, capital = 10000) => {
+export const fetchSummaryData = async (minProfit = 10.0) => {
   try {
     const response = await axios.get(`${API_BASE_URL}/summary`, {
-      params: { threshold, capital }
+      params: { min_profit: minProfit }
     });
     return response.data;
   } catch (error) {
