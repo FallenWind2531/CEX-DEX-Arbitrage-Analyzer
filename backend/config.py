@@ -20,7 +20,7 @@ PROCESSED_DATA_PKL = f"{DATA_DIR}/processed_algo_b_data.pkl"
 # 冲击系数 
 # 含义：每增加 1 ETH 交易量，且在 1 单位波动率下，滑点增加的比例
 # 这是一个经验值，用于模拟 Binance 在没有订单簿数据时的滑点
-ALGO_IMPACT_FACTOR = 0.0002 
+ALGO_IMPACT_FACTOR = 0.0005
 
 # 模拟交易的 ETH 数量列表
 SIMULATION_AMOUNTS = [0.1, 1.0, 5.0, 10.0, 20.0, 50.0, 100.0]

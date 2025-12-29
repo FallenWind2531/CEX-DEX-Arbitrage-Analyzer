@@ -1,24 +1,47 @@
 import React, { useMemo } from 'react';
-import { AlertCircle, MousePointerClick } from 'lucide-react';
+import { AlertCircle, MousePointerClick, ShieldAlert } from 'lucide-react';
 
 const ArbitrageTable = ({ data, onRowClick, selectedTimestamp }) => {
   
-  // 使用 useMemo 缓存计算结果，避免每次渲染都重新计算
   const uniqueData = useMemo(() => {
     const map = new Map();
     
     data.forEach(item => {
       const existing = map.get(item.timestamp);
-      // 如果该时间戳还没有记录，或者当前记录的利润更高，则更新 Map
       if (!existing || item.net_profit_usd > existing.net_profit_usd) {
         map.set(item.timestamp, item);
       }
     });
 
-    // 将 Map 转回数组，并按利润降序排列（保持原有的 Top 排序逻辑）
     return Array.from(map.values())
       .sort((a, b) => b.net_profit_usd - a.net_profit_usd);
   }, [data]);
+
+  // 风险等级辅助函数
+  const getRiskBadge = (score) => {
+    let colorClass = '';
+    let label = '';
+    
+    if (score >= 70) {
+      colorClass = 'bg-red-100 text-red-700 border-red-200';
+      label = '高风险';
+    } else if (score >= 30) {
+      colorClass = 'bg-yellow-100 text-yellow-700 border-yellow-200';
+      label = '中风险';
+    } else {
+      colorClass = 'bg-green-100 text-green-700 border-green-200';
+      label = '低风险';
+    }
+
+    return (
+      <div className="flex items-center gap-2">
+        <span className={`px-2 py-0.5 rounded text-xs font-semibold border ${colorClass}`}>
+          {label}
+        </span>
+        <span className="text-xs text-gray-400">({score})</span>
+      </div>
+    );
+  };
 
   return (
     <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
@@ -35,6 +58,7 @@ const ArbitrageTable = ({ data, onRowClick, selectedTimestamp }) => {
             <tr>
               <th className="p-3">时间</th>
               <th className="p-3">方向</th>
+              <th className="p-3">风险评估</th> {/* 新增列 */}
               <th className="p-3">Binance</th>
               <th className="p-3">Uniswap</th>
               <th className="p-3">价差%</th>
@@ -47,7 +71,7 @@ const ArbitrageTable = ({ data, onRowClick, selectedTimestamp }) => {
           <tbody>
             {uniqueData.length === 0 ? ( 
               <tr>
-                <td colSpan="9" className="p-8 text-center text-gray-400">暂无符合条件的套利机会</td>
+                <td colSpan="10" className="p-8 text-center text-gray-400">暂无符合条件的套利机会</td>
               </tr>
             ) : (
               uniqueData.slice(0, 20).map((row, idx) => {
@@ -66,10 +90,14 @@ const ArbitrageTable = ({ data, onRowClick, selectedTimestamp }) => {
                     </td>
                     <td className="p-3">
                       <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
-                        row.direction === 'DEX_TO_CEX' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-700'
+                        row.direction === 'Buy_Uni_Sell_Bin' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-700'
                       }`}>
-                        {row.direction === 'DEX_TO_CEX' ? 'Uni → Bin' : 'Bin → Uni'}
+                        {row.direction === 'Buy_Uni_Sell_Bin' ? 'Uni → Bin' : 'Bin → Uni'}
                       </span>
+                    </td>
+                    {/* 风险列 */}
+                    <td className="p-3">
+                      {getRiskBadge(row.risk_score || 0)}
                     </td>
                     <td className="p-3">${row.price_bin.toFixed(2)}</td>
                     <td className="p-3">${row.price_uni.toFixed(2)}</td>
