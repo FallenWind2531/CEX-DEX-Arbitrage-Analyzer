@@ -82,7 +82,7 @@ const OpportunitiesPage = () => {
     }
 
     const headers = [
-      '时间', '区块号', '方向', 'Binance价格', 'Uniswap价格', 
+      '时间', '区块号', '方向', '风险评分', 'Binance价格', 'Uniswap价格', 
       '价差%', '波动率', '最优交易量(ETH)', 'Gas成本', 'Uni滑点%', 'Bin滑点%', 
       '净利润(USDT)', 'ROI%'
     ];
@@ -91,6 +91,7 @@ const OpportunitiesPage = () => {
       item.timestamp,
       item.block_number,
       item.direction,
+      item.risk_score || 0,
       item.price_bin.toFixed(2),
       item.price_uni.toFixed(2),
       item.spread_pct.toFixed(4),
@@ -143,6 +144,25 @@ const OpportunitiesPage = () => {
           </Tag>
         );
       },
+    },
+    {
+      title: '风险评估',
+      dataIndex: 'risk_score',
+      key: 'risk_score',
+      width: 120,
+      sorter: (a, b) => (a.risk_score || 0) - (b.risk_score || 0),
+      render: (score) => {
+        let color = 'green';
+        let label = '低风险';
+        if (score >= 70) { color = 'red'; label = '高风险'; }
+        else if (score >= 30) { color = 'gold'; label = '中风险'; }
+        
+        return (
+            <Tag color={color}>
+                {label} ({score || 0})
+            </Tag>
+        );
+      }
     },
     {
       title: 'Binance',
@@ -371,4 +391,3 @@ const OpportunitiesPage = () => {
 };
 
 export default OpportunitiesPage;
-

@@ -2,7 +2,7 @@
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Optional  # 引入 Optional 以防万一
 from pydantic import BaseModel
 import pandas as pd
 from data_service import service
@@ -29,9 +29,11 @@ class AlgoBOpportunity(BaseModel):
     spread_pct: float
     volatility: float
     
-    optimal_amount_eth: float # 算法 B 算出的最佳交易量 (ETH)
-    net_profit_usd: float     # 真实净利 (USDT)
-    roi_pct: float            # 投资回报率 (%)
+    optimal_amount_eth: float 
+    net_profit_usd: float     
+    roi_pct: float            
+
+    risk_score: int = 0 
     
     details: ArbitrageDetails
 
@@ -50,7 +52,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Arbitrage Algo B System", lifespan=lifespan)
 
-# 允许跨域请求 (方便前端调用)
+# 允许跨域请求
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
